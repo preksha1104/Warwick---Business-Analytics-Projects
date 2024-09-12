@@ -1,0 +1,433 @@
+
+---
+title: "AIP Group Assignment"
+author: "Group 7"
+date: "2023-11-23"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message = FALSE, eval = FALSE)
+
+install.packages("tidyverse")
+library(tidyverse)
+
+install.packages("dplyr")
+library(dplyr)
+
+install.packages("ggplot2")
+library(ggplot2)
+
+install.packages("mltools")
+library(mltools)
+
+install.packages("data.table")
+library(data.table)
+
+install.packages("caret")
+library(caret)
+
+install.packages("ROSE")
+library(ROSE)
+
+install.packages("splitstackshape")
+library(splitstackshape) 
+
+install.packages("e1071")
+library(e1071)
+
+install.packages("pROC")
+library(pROC)
+
+install.packages("FSelector")
+library(FSelector)
+
+install.packages("C50")
+library(C50)
+
+install.packages("randomForest")
+library(randomForest)
+
+install.packages("randomForestSRC")
+library(randomForestSRC)
+
+install.packages("precrec")
+library(precrec)
+
+install.packages("cowplot")
+library(cowplot)
+
+
+```
+
+## Data Cleaning and Encoding
+
+```{r}
+
+#import dataset
+old_data<- read.csv("assignment_data.csv")
+
+data <- old_data
+
+#remove ID variable
+data$ID <- NULL
+
+# Check for duplicated data
+sum(duplicated(data))
+
+# Remove -1 values in Dependent
+minus_1 <- which(data$Dependent == -1)
+data <- data[-minus_1,]
+
+
+#change data type to factor
+columns_to_convert <- c("Gender","Dependent", "Marital_Status", "Registration", "Target","Region_Code")
+
+data <- data %>% mutate_at(columns_to_convert, as.factor)
+
+#str(data)
+
+
+# Observation that 60% are younger generation
+barplot(sort(table(data$Age), decreasing = T))
+
+```
+
+```{r}
+# Apply ifelse function to update the "Active" column
+data$Active <- ifelse(data$Active == "Yes", 1, 0)
+
+# Apply label encoding to Gender
+data$Gender <- recode(data$Gender, "Female" = 0, "Male" = 1)
+
+# Apply label encoding to Occupation
+data$Occupation<- recode(data$Occupation, "Other" = 1, "Salaried" = 2, "Self_Employed" = 3, "Entrepreneur" = 4)
+
+# Apply label encoding to Channel_Code
+data$Channel_Code<- recode(data$Channel_Code, "X1" = 1, "X2" = 2, "X3" = 3, "X4" = 4)
+
+# Apply label encoding to Account_Type
+data$Account_Type<- recode(data$Account_Type, "Silver" = 1, "Gold" = 2, "Platinum" = 3)
+
+# Change NA value in Credit_Product to "No" (rationale: Taking mode and turn them to "No")
+
+data$Credit_Product[is.na(data$Credit_Product)] <- "No"
+
+summary(data$Credit_Product)
+str(data$Credit_Product)
+
+
+data$Credit_Product <- recode(data$Credit_Product, "No" = 0, "Yes" = 1)
+
+
+str(data$Credit_Product)
+
+columns_to_convert_revised <- c("Gender","Dependent", "Marital_Status", "Registration", "Target", "Credit_Product","Region_Code","Occupation","Channel_Code","Account_Type","Active")
+
+data <- data %>%
+  mutate_at(columns_to_convert_revised, as.factor)
+
+summary(data$Credit_Product)
+
+str(data)
+
+```
+
+
+## Data Partioning (Stratified Sampling)
+```{r}
+# Stratified Sampling
+# Set a seed of 10 by using set.seed() function
+set.seed(10)
+
+# Partition the dataset into training and test sets
+index = createDataPartition(data$Target, p = 0.7, list = FALSE)
+
+# Generate training and test data for data
+training = data[index, ]
+test = data[-index, ]
+
+```
+
+
+
+## Both-sampling Data on stratified training sets
+
+```{r}
+
+# Both
+bothsampled_train_data <- ovun.sample(Target ~ ., data = training, method = "both", p=0.4, seed=1)$data
+
+```
+
+```{r}
+# Check the proportion of "Target" in the all training data sets
+
+table(data$Target)
+prop.table(table(data$Target))
+
+
+
+# Stratified both-sampling sets
+table(bothsampled_train_data$Target)
+prop.table(table(bothsampled_train_data$Target))
+
+
+```
+
+```{r}
+# Check how many 0 and 1 records are in all training datasets
+
+
+table(bothsampled_train_data$Target)
+
+# Just checking whether numbers are consistent
+```
+
+
+#The first step of feature selection
+```{r}
+
+# Checking region code significance
+
+weights <- information.gain(Target ~., bothsampled_train_data)
+
+# Print weights
+print(weights)
+
+# Add row names as a column to keep them during ordering
+weights$attr  <- rownames(weights)
+
+# Sort the weights in decreasing order of information gain values.
+weights <- arrange(weights, -weights$attr_importance)
+barplot(weights$attr_importance, names = weights$attr, las = 2, ylim = c(0, 0.2))
+
+# Filter features where the information gain is the first top 7 (half). 
+bothsampled_train_data[c("Account_Type", "Years_at_Residence", "Dependent", "Marital_Status", "Gender", "Avg_Account_Balance", "Active")] <- NULL
+
+# Low Significance in decision making
+```
+
+
+
+# Model 1 - Decision Tree
+
+```{r}
+
+# Filter features as per Decision tree top 4
+bothsampled_train_data_new <- bothsampled_train_data %>% select(c("Vintage", "Registration","Age","Channel_Code","Target"))
+
+str(bothsampled_train_data_new)
+
+```
+
+
+```{r}
+
+decision_tree <- C5.0(Target~., bothsampled_train_data_new)
+
+summary(decision_tree)
+
+prediction_decision_tree_ <- predict(decision_tree,test)
+
+ConfusionMatrix_DT <-confusionMatrix(prediction_decision_tree_,test$Target, positive='1', mode = "prec_recall")
+
+
+```
+
+
+#Model 2 - random forest
+
+```{r}
+
+
+set.seed(10)
+
+
+# Build Random Forest model and assign it to model_RF
+model_RF_bothsample <- randomForest(Target~., bothsampled_train_data_new)
+
+# Print model_RF
+print(model_RF_bothsample)
+
+# Check the important attributes by using importance() function
+importance(model_RF_bothsample)
+
+# Plot the importance values
+varImpPlot(model_RF_bothsample)
+
+# Using model_RF predict the class of the test data
+prediction_RF_bothsample <- predict(model_RF_bothsample,test)
+
+results_RF_bothsample <- test
+
+results_RF_bothsample$Prediction_RF_bothsample <- prediction_RF_bothsample
+
+correct_RF_bothsample <- which(test$Target == prediction_RF_bothsample)
+
+accuracy_RF_bothsample <- length(correct_RF_bothsample)/nrow(test)
+
+print(accuracy_RF_bothsample)
+
+confusionMatrix(prediction_RF_bothsample,test$Target, positive='1', mode = "prec_recall")
+
+# Check overfitting
+
+training_RF_bothsample <- bothsampled_train_data
+
+prediction_RF_bothsample_training <- predict(model_RF_bothsample, bothsampled_train_data)
+
+training_RF_bothsample$Prediction_RF_bothsample <- prediction_RF_bothsample_training
+
+correct_RF_bothsample_training <- which(bothsampled_train_data$Target == prediction_RF_bothsample_training)
+
+accuracy_RF_bothsample_training <- length(correct_RF_bothsample_training)/nrow(bothsampled_train_data)
+
+print(accuracy_RF_bothsample_training)
+
+```
+
+#Model 3 - LR
+```{r}
+# Bothsampling method
+LogReg_2 <- glm(Target~. , bothsampled_train_data, family = "binomial")
+ 
+prediction_LogReg_2 <- predict(LogReg_2, test)
+```
+ 
+```{r}
+LogReg_class_2 <- ifelse(prediction_LogReg_2 > 0.5, 1, 0)
+LogReg_class_2 <- as.factor(LogReg_class_2)
+confusionMatrix(LogReg_class_2, test$Target, positive = "1", mode = "prec_recall")
+ 
+```
+
+#model 4 - SVM 
+```{r}
+# Use bothsampled method
+svm_churn_2 <- svm(Target~., data=bothsampled_train_data, kernel="radial", probability = TRUE)
+```
+ 
+```{r}
+
+prediction_SVM_2 <- predict(svm_churn_2, test)
+ 
+confusionMatrix(prediction_SVM_2, test$Target, positive='1', mode = "prec_recall")
+
+```
+ 
+```{r}
+# Check the accuracy on training data using bothsampling method
+prediction_SVM_training_2 = predict(svm_churn_2, training)
+ 
+```
+ 
+```{r}
+ 
+# Total number of correct predictions
+correct_SVM_2 <- which(test$Target == prediction_SVM_2)
+ 
+# Total number of correct predictions in the training data
+correct_SVM_training_2 <- which(training$Target == prediction_SVM_training_2)
+ 
+# Find the percentage of correct predictions
+accuracy_svm_2 <- length(correct_SVM_2)/ nrow(test)
+ 
+accuracy_svm_training_2 <- length(correct_SVM_training_2)/ nrow(training)
+```
+
+
+```{r}
+results_SVM_bothsample <- test
+ 
+results_SVM_bothsample$Prediction_svm_bothsample <- prediction_SVM_2
+
+```
+
+
+
+## Evaluation
+
+#ROC curves
+```{r}
+#Obtain class probabilities by using predict() and adding = "prob" for RF, DT, SVM, LR
+
+prob_RF <- predict(model_RF_bothsample, test, type = "prob")
+ROC_RF <- roc(test$Target, prob_RF[,2])
+
+prob_DT <- predict(decision_tree, test, type = "prob")
+ROC_DT <- roc(test$Target, prob_DT[,2])
+
+SVMpred <- predict(svm_churn_2, test, probability = TRUE)
+prob_SVM <- attr(SVMpred, "probabilities")
+ROC_SVM <- roc(test$Target, prob_SVM[,2])
+
+LRpred <- predict(LogReg_2, test, type = "response")
+ROC_LR <- roc(test$Target, LRpred)
+
+#Plot the ROC curve for RF, DT, SVM and LR
+ggroc(list(RF = ROC_RF, SVM = ROC_SVM, DT = ROC_DT, LR = ROC_LR), legacy.axes = TRUE) + xlab("FPR") + ylab("TPR") +
+  geom_abline(intercept = 0, slope = 1, color = "darkgrey", linetype = "dashed")
+```
+
+#PR Curves
+
+```{r}
+
+#Obtain PR-Curve
+PR_DT_1 <- evalmod(scores = prob_DT[,2], labels = test$Target)
+PR_RF_1 <- evalmod(scores = prob_RF[,2], labels = test$Target)
+PR_SVM_1 <- evalmod(scores = prob_SVM[,2], labels = test$Target)
+PR_LR_1 <- evalmod(scores = LRpred, labels = test$Target)
+
+
+# 4 graphs all at once
+plot_DT <- autoplot(PR_DT_1, "PRC", col = "red", lwd = 1.5)
+plot_RF <- autoplot(PR_RF_1, "PRC", col = "blue", lwd = 1.5)
+plot_SVM <- autoplot(PR_SVM_1, "PRC", col = "green", lwd = 1.5)
+plot_LR <- autoplot(PR_LR_1, "PRC", col = "orange", lwd = 1.5)
+
+# Arrange plots into a grid with a shared legend
+combined_plots <- plot_grid(plot_DT, plot_RF, plot_SVM, plot_LR, labels = c("DT", "RF", "SVM", "LR"), ncol = 2)
+
+# Show the combined plot
+print(combined_plots)
+
+# $ Different graphs in different planes
+plotPR<- autoplot(PR_DT_1, "PRC", col = "red", lwd = 1.5)
+autoplot(PR_RF_1, "PRC", col = "blue", lwd = 1.5, add = TRUE)
+autoplot(PR_SVM_1, "PRC", col = "green", lwd = 1.5, add = TRUE)
+autoplot(PR_LR_1, "PRC", col = "orange", lwd = 1.5, add = TRUE)
+
+
+```
+
+#Gain Chart
+```{r}
+# Provide probabilities for the outcome of interest and obtain the gain chart data
+
+GainTable_LogReg <- cumGainsTable(prediction_LogReg_2, test$Target, resolution = 1/100)
+
+GainTable_SVM <- cumGainsTable(prob_SVM[,2], test$Target, resolution = 1/100)
+
+GainTable_RF <- cumGainsTable(prob_RF[,2], test$Target, resolution = 1/100)
+
+GainTable_DT <- cumGainsTable(prob_DT[,2], test$Target, resolution = 1/100)
+
+
+
+plot(GainTable_LogReg[,4], col="red", type="l",    
+xlab="Percentage of test instances", ylab="Percentage of identified invalid claims")
+lines(GainTable_RF[,4], col="green", type ="l")
+lines(GainTable_SVM[,4], col="blue", type ="l")
+lines(GainTable_DT[,4], col="pink", type ="l")
+grid(NULL, lwd = 1)
+
+legend("bottomright",
+c("LogReg", "SVM", "Random Forest","Decision Tree"),
+fill=c("red","blue", "green","pink"))
+```
+
